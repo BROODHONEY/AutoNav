@@ -152,4 +152,4 @@ MIT — see [`LICENSE`](./LICENSE).
 
 ## Team
 
-[Your Team Name] — Smart India Hackathon 2026
+Gradient Ascent — Smart India Hackathon 2026
