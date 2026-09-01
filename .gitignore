@@ -1,0 +1,28 @@
+# Arduino / PlatformIO
+*.hex
+*.bin
+*.elf
+.pio/
+build/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# WiFi credentials if you split them into a separate untracked file
+secrets.h
+wifi_config.h

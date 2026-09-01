@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>AutoNav Dashboard</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin:0; background:#16161a; color:#e8e8ec; font-family:'Consolas','Menlo',monospace; height:100vh; display:flex; flex-direction:column; }
+  header { padding:12px 20px; background:#1f1f26; border-bottom:1px solid #333; display:flex; align-items:center; justify-content:space-between; }
+  header h1 { font-size:18px; margin:0; }
+  #status-dot { width:10px; height:10px; border-radius:50%; background:#d33; display:inline-block; margin-right:8px; }
+  #status-dot.connected { background:#3d3; }
+  #collision-banner {
+    display:none; background:#5a1414; color:#ffb3b3; padding:10px 20px;
+    font-weight:bold; border-bottom:2px solid #ff4444; text-align:center;
+  }
+  #collision-banner.show { display:block; }
+  .main { flex:1; display:flex; min-height:0; }
+  #log-panel { width:340px; background:#1a1a20; border-right:1px solid #333; display:flex; flex-direction:column; padding:12px; overflow:hidden; }
+  #log-panel h2 { font-size:14px; color:#aaa; margin:0 0 8px 0; }
+  #log-list { flex:1; overflow-y:auto; font-size:12px; line-height:1.5; }
+  #log-list div { padding:2px 0; color:#9fcf9f; border-bottom:1px solid #232329; }
+  #log-list div.warn { color:#e0c060; }
+  #log-list div.collision { color:#ff6b6b; font-weight:bold; }
+  #graph-area { flex:1; position:relative; min-width:0; }
+  #graph-area svg { width:100%; height:100%; display:block; }
+  .rack { fill:#2b2b33; stroke:#57576a; stroke-width:2; rx:6; }
+  .edge { stroke:#5a5a66; stroke-width:3; }
+  .node-circle { fill:#32323c; stroke:#c8c8d2; stroke-width:2; cursor:pointer; }
+  .node-circle.pickup-sel { stroke:#f0a040; stroke-width:4; }
+  .node-label { fill:#dcdce4; font-size:13px; text-anchor:middle; pointer-events:none; }
+  .robot-dot { stroke-width:4; transition: cx 0.6s ease, cy 0.6s ease; }
+  .robot-dot.collision-flash { stroke: #ff2020 !important; }
+  .route-line { fill:none; stroke-width:4; opacity:0.85; transition: all 0.3s ease; }
+  #side-panel { width:320px; background:#1a1a20; border-left:1px solid #333; padding:12px; overflow-y:auto; font-size:13px; display:flex; flex-direction:column; }
+  #side-panel h2 { font-size:14px; color:#aaa; margin:14px 0 6px 0; }
+  #side-panel h2:first-child { margin-top:0; }
+  .robot-row { padding:6px 0; border-bottom:1px solid #232329; }
+  .robot-row .stats { color:#999; font-size:11px; }
+  .job-row { padding:4px 0; border-bottom:1px solid #232329; font-size:12px; }
+  .job-pending { color:#e0c060; }
+  .job-claimed { color:#60a0e0; }
+  .job-delivered { color:#6fd88f; }
+  .stale { opacity:0.4; }
+  #compare-box div { padding:2px 0; }
+  .smart-text { color:#6fd88f; }
+  .naive-text { color:#d88f6f; }
+  footer { padding:10px 20px; background:#1f1f26; border-top:1px solid #333; display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  button, input { background:#2c2c36; color:#eee; border:1px solid #444; padding:8px 10px; border-radius:6px; cursor:pointer; font-family:inherit; font-size:12px; }
+  input { width:50px; cursor:text; }
+  button:hover { background:#3a3a48; }
+  button.active { background:#3d6b3d; border-color:#5a9c5a; }
+  #hint { color:#888; font-size:11px; margin-left:auto; }
+  #job-list { max-height: 220px; overflow-y: auto; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>AutoNav Dashboard</h1>
+  <div><span id="status-dot"></span><span id="status-text">connecting...</span></div>
+</header>
+
+<div id="collision-banner">⚠ COLLISION WATCHDOG TRIGGERED — see event log ⚠</div>
+
+<div class="main">
+  <div id="log-panel">
+    <h2>Event log</h2>
+    <div id="log-list"></div>
+  </div>
+
+  <div id="graph-area">
+    <svg id="graph-svg" viewBox="0 0 900 600" preserveAspectRatio="xMidYMid meet"></svg>
+  </div>
+
+  <div id="side-panel">
+    <h2>Robots</h2>
+    <div id="robot-list"></div>
+    <h2>Jobs</h2>
+    <div id="job-list"></div>
+    <h2>Comparison (smart vs naive)</h2>
+    <div id="compare-box"></div>
+  </div>
+</div>
+
+<footer>
+  <button id="btn-push-graph">Push graph</button>
+  <button id="btn-mode">Mode: SMART</button>
+  <span>Pickup: <input id="in-pickup" type="number" min="1"></span>
+  <span>Dropoff: <input id="in-dropoff" type="number" min="1"></span>
+  <button id="btn-create-job">Create job</button>
+  <button id="btn-random-job">Random job</button>
+</footer>
+<footer style="border-top:none;">
+  <input id="cmd-input" type="text" placeholder="job 10 20 | assign 2 10 20 | random | mode smart | mode naive | graph" style="width:400px;">
+  <button id="btn-cmd-run">Run</button>
+  <span id="hint">Type a command and press Enter, or click a node (pickup) then another (dropoff) on the graph</span>
+</footer>
+
+<script>
+const EDGES = [
+  [1,2],[1,10],[2,3],[3,4],[4,5],[5,6],[6,7],[7,8],[3,8],[8,9],
+  [9,10],[10,11],[11,12],[12,13],[13,14],[8,13],[14,15],[15,16],
+  [16,17],[17,18],[18,13],[18,19],[19,20],[11,20],[6,15]
+];
+const ROWS = [[1,2,3,4,5],[10,9,8,7,6],[11,12,13,14,15],[20,19,18,17,16]];
+const ROBOT_COLORS = {1:"#3c8cdc",2:"#e68c28",3:"#a050c8",4:"#c83c78",5:"#50c8c8"};
+const STATE_NAMES = {0:"IDLE",1:"PLANNING",2:"MOVING",3:"WAITING"};
+const STATE_COLORS = {0:"#8c8c8c",1:"#c8c850",2:"#3cb45a",3:"#dc3c3c"};
+const STALE_AFTER_S = 6;
+
+function computePositions() {
+  const x0=90,x1=810,y0=70,y1=530; const pos={};
+  ROWS.forEach((rowNodes,ri)=>rowNodes.forEach((node,ci)=>{
+    pos[node]={x:x0+ci*(x1-x0)/4, y:y0+ri*(y1-y0)/3};
+  }));
+  return pos;
+}
+const POS = computePositions();
+
+function computeRacks() {
+  const colX=[POS[1].x,POS[2].x,POS[3].x,POS[4].x,POS[5].x];
+  const rowY=[POS[1].y,POS[10].y,POS[11].y,POS[20].y];
+  const mx=(colX[2]-colX[0])*0.12, my=(rowY[1]-rowY[0])*0.28;
+  return [
+    [colX[0]-mx,rowY[0]+my,colX[2]+mx,rowY[1]-my],[colX[2]-mx,rowY[0]+my,colX[4]+mx,rowY[1]-my],
+    [colX[0]-mx,rowY[1]+my,colX[2]+mx,rowY[2]-my],[colX[2]-mx,rowY[1]+my,colX[4]+mx,rowY[2]-my],
+    [colX[0]-mx,rowY[2]+my,colX[2]+mx,rowY[3]-my],[colX[2]-mx,rowY[2]+my,colX[4]+mx,rowY[3]-my],
+  ];
+}
+const RACKS = computeRacks();
+const svg = document.getElementById("graph-svg");
+const NS = "http://www.w3.org/2000/svg";
+function el(tag,attrs){ const e=document.createElementNS(NS,tag); for(const k in attrs) e.setAttribute(k,attrs[k]); return e; }
+
+RACKS.forEach(([x1,y1,x2,y2])=>svg.appendChild(el("rect",{x:x1,y:y1,width:x2-x1,height:y2-y1,class:"rack"})));
+EDGES.forEach(([a,b])=>svg.appendChild(el("line",{x1:POS[a].x,y1:POS[a].y,x2:POS[b].x,y2:POS[b].y,class:"edge"})));
+const routeLayer = el("g",{}); svg.appendChild(routeLayer);
+
+const nodeCircles = {};
+Object.keys(POS).forEach(nodeStr=>{
+  const node=parseInt(nodeStr), {x,y}=POS[node];
+  const c=el("circle",{cx:x,cy:y,r:16,class:"node-circle"});
+  c.addEventListener("click",()=>onNodeClick(node));
+  svg.appendChild(c); nodeCircles[node]=c;
+  const t=el("text",{x:x,y:y+5,class:"node-label"}); t.textContent=node; svg.appendChild(t);
+});
+const robotLayer = el("g",{}); svg.appendChild(robotLayer);
+
+let robots = {};
+let jobs = {};
+let pendingPickup = null;
+let smartDurations = [];
+let naiveDurations = [];
+let currentMode = "smart";
+
+function getRobot(id) {
+  if (!robots[id]) {
+    const c=el("circle",{cx:POS[1].x,cy:POS[1].y,r:11,class:"robot-dot",fill:ROBOT_COLORS[id]||"#fff",stroke:STATE_COLORS[0]});
+    robotLayer.appendChild(c);
+    const routeEl=el("polyline",{class:"route-line",stroke:ROBOT_COLORS[id]||"#fff",points:""});
+    routeLayer.appendChild(routeEl);
+    robots[id] = {current_node:1,state:0,eta:0,route:[],last_seen:0,
+                  wait_start:null,total_wait:0,reroute_count:0,yield_count:0,sidestep_count:0,job_count:0,
+                  el:c, routeEl:routeEl};
+  }
+  return robots[id];
+}
+
+function renderRobot(id) {
+  const r = robots[id]; const p = POS[r.current_node];
+  if (!p) return;
+  r.el.setAttribute("cx",p.x); r.el.setAttribute("cy",p.y);
+  r.el.setAttribute("stroke", STATE_COLORS[r.state]||"#fff");
+  const idx = r.route.indexOf(r.current_node);
+  if (idx>=0 && idx+1<r.route.length) {
+    r.routeEl.setAttribute("points", r.route.slice(idx).map(n=>POS[n]?`${POS[n].x},${POS[n].y}`:"").join(" "));
+  } else {
+    r.routeEl.setAttribute("points","");
+  }
+}
+
+function flashCollision(robotIds) {
+  robotIds.forEach(id => {
+    const r = getRobot(id);
+    r.el.classList.add("collision-flash");
+    setTimeout(() => r.el.classList.remove("collision-flash"), 3000);
+  });
+  const banner = document.getElementById("collision-banner");
+  banner.classList.add("show");
+  setTimeout(() => banner.classList.remove("show"), 5000);
+}
+
+function renderSidePanel() {
+  const list = document.getElementById("robot-list"); list.innerHTML="";
+  Object.keys(robots).sort().forEach(idStr=>{
+    const id=parseInt(idStr), r=robots[id];
+    const stale = (Date.now()/1000 - r.last_seen) > STALE_AFTER_S;
+    const div = document.createElement("div");
+    div.className = "robot-row" + (stale?" stale":"");
+    const waitDisplay = r.total_wait + (r.wait_start ? (Date.now()/1000-r.wait_start) : 0);
+    div.innerHTML = `<div style="color:${ROBOT_COLORS[id]||'#fff'}">Robot ${id}: ${STATE_NAMES[r.state]||'?'} node:${r.current_node} ETA:${r.eta.toFixed(2)}s ${stale?'(stale)':''}</div>
+      <div class="stats">jobs:${r.job_count} reroutes:${r.reroute_count} yields:${r.yield_count} sidesteps:${r.sidestep_count} wait:${waitDisplay.toFixed(1)}s</div>`;
+    list.appendChild(div);
+  });
+
+  const jlist = document.getElementById("job-list"); jlist.innerHTML="";
+  Object.keys(jobs).sort((a,b)=>b-a).slice(0,15).forEach(jidStr=>{
+    const jid=parseInt(jidStr), j=jobs[jid];
+    const statusName = j.status===0?"PENDING":(j.status===1?`CLAIMED by R${j.robot_id}`:`DELIVERED (R${j.robot_id})`);
+    const cls = j.status===0?"job-pending":(j.status===1?"job-claimed":"job-delivered");
+    const div = document.createElement("div");
+    div.className = "job-row " + cls;
+    const reservedTag = j.target_robot ? ` (for R${j.target_robot})` : "";
+    div.textContent = `#${jid}: ${j.pickup} -> ${j.dropoff}${reservedTag}  [${statusName}]`;
+    jlist.appendChild(div);
+  });
+
+  const box = document.getElementById("compare-box");
+  const smartAvg = smartDurations.length ? smartDurations.reduce((a,b)=>a+b,0)/smartDurations.length : null;
+  const naiveAvg = naiveDurations.length ? naiveDurations.reduce((a,b)=>a+b,0)/naiveDurations.length : null;
+  let html = `<div class="smart-text">SMART: n=${smartDurations.length}${smartAvg?` avg=${(smartAvg/1000).toFixed(2)}s`:''}</div>`;
+  html += `<div class="naive-text">NAIVE: n=${naiveDurations.length}${naiveAvg?` avg=${(naiveAvg/1000).toFixed(2)}s`:''}</div>`;
+  if (smartAvg && naiveAvg) {
+    const improvement = (naiveAvg-smartAvg)/naiveAvg*100;
+    html += `<div style="color:${improvement>0?'#6fd88f':'#d86f6f'};margin-top:6px;">-> Smart is ${improvement.toFixed(1)}% faster than naive</div>`;
+  }
+  box.innerHTML = html;
+}
+
+function logLine(text, level) {
+  const list = document.getElementById("log-list");
+  const div = document.createElement("div");
+  div.textContent = `[${new Date().toLocaleTimeString()}] ${text}`;
+  if (level === "warn") div.className = "warn";
+  if (level === "collision") div.className = "collision";
+  list.appendChild(div);
+  while (list.children.length>250) list.removeChild(list.firstChild);
+  list.scrollTop = list.scrollHeight;
+}
+
+function onNodeClick(node) {
+  if (pendingPickup === null) {
+    pendingPickup = node;
+    nodeCircles[node].classList.add("pickup-sel");
+    logLine(`Pickup set to node ${node} — click another node for dropoff`);
+  } else {
+    nodeCircles[pendingPickup].classList.remove("pickup-sel");
+    if (pendingPickup !== node) {
+      send({cmd:"create_job", pickup: pendingPickup, dropoff: node});
+    }
+    pendingPickup = null;
+  }
+}
+
+let ws;
+function connect() {
+  ws = new WebSocket("ws://localhost:8765");
+  ws.onopen = () => { document.getElementById("status-dot").classList.add("connected"); document.getElementById("status-text").textContent="connected"; };
+  ws.onclose = () => { document.getElementById("status-dot").classList.remove("connected"); document.getElementById("status-text").textContent="disconnected — retrying..."; setTimeout(connect,2000); };
+  ws.onerror = () => ws.close();
+  ws.onmessage = (evt) => {
+    const msg = JSON.parse(evt.data);
+    if (msg.type === "log") logLine(msg.text, msg.level);
+    else if (msg.type === "collision_warning") flashCollision(msg.robots);
+    else if (msg.type === "heartbeat") {
+      const r=getRobot(msg.robot_id);
+      r.current_node=msg.current_node; r.state=msg.state; r.eta=msg.eta; r.last_seen=Date.now()/1000;
+      renderRobot(msg.robot_id); renderSidePanel();
+    } else if (msg.type === "route") {
+      const r=getRobot(msg.robot_id); r.route=msg.route; renderRobot(msg.robot_id);
+    } else if (msg.type === "event") {
+      handleEventStats(msg.robot_id, msg.event_type, msg.node); renderSidePanel();
+    } else if (msg.type === "job_announce") {
+      jobs[msg.job_id] = {pickup:msg.pickup, dropoff:msg.dropoff, status:0, robot_id:0, target_robot: msg.target_robot||0};
+      renderSidePanel();
+    } else if (msg.type === "job_claim") {
+      if (jobs[msg.job_id]) { jobs[msg.job_id].status=1; jobs[msg.job_id].robot_id=msg.robot_id; }
+      getRobot(msg.robot_id).job_count++;
+      renderSidePanel();
+    } else if (msg.type === "job_complete") {
+      if (jobs[msg.job_id]) { jobs[msg.job_id].status=2; jobs[msg.job_id].robot_id=msg.robot_id; }
+      renderSidePanel();
+    } else if (msg.type === "job_result") {
+      if (msg.mode===1) smartDurations.push(msg.duration_ms); else naiveDurations.push(msg.duration_ms);
+      renderSidePanel();
+    }
+  };
+}
+
+// Note: we can't perfectly tell "idle yield" from "sidestep" purely from
+// the event_type on the frontend (the bridge already annotates the LOG
+// TEXT for that), but we still count all EVT_YIELDED under yield_count
+// for a simple total; the log text is the authoritative distinction.
+const EVT = {WAITING:1,RESUMED:2,REROUTED:3,YIELDED:4,JOB_CLAIMED:5,ARRIVED_PICKUP:6,ARRIVED_DROPOFF:7};
+function handleEventStats(id, eventType, node) {
+  const r = getRobot(id);
+  if (eventType===EVT.WAITING) r.wait_start = Date.now()/1000;
+  else if (eventType===EVT.RESUMED) { if(r.wait_start){ r.total_wait+=Date.now()/1000-r.wait_start; r.wait_start=null; } }
+  else if (eventType===EVT.REROUTED) { r.reroute_count++; if(r.wait_start){ r.total_wait+=Date.now()/1000-r.wait_start; r.wait_start=null; } }
+  else if (eventType===EVT.YIELDED) {
+    if (r.state === 0) r.yield_count++; else r.sidestep_count++;
+  }
+  else if (eventType===EVT.ARRIVED_DROPOFF) { if(r.wait_start){ r.total_wait+=Date.now()/1000-r.wait_start; r.wait_start=null; } }
+}
+
+function send(obj) { if (ws && ws.readyState===WebSocket.OPEN) ws.send(JSON.stringify(obj)); }
+
+document.getElementById("btn-push-graph").onclick = () => send({cmd:"push_graph"});
+document.getElementById("btn-mode").onclick = () => {
+  currentMode = (currentMode==="smart") ? "naive" : "smart";
+  send({cmd:"set_mode", smart: currentMode==="smart"});
+  const btn = document.getElementById("btn-mode");
+  btn.textContent = "Mode: " + currentMode.toUpperCase();
+  btn.classList.toggle("active", currentMode==="smart");
+};
+document.getElementById("btn-create-job").onclick = () => {
+  const pickup = parseInt(document.getElementById("in-pickup").value);
+  const dropoff = parseInt(document.getElementById("in-dropoff").value);
+  if (pickup && dropoff && pickup !== dropoff) send({cmd:"create_job", pickup, dropoff});
+};
+document.getElementById("btn-random-job").onclick = () => send({cmd:"random_job"});
+
+function runCommand(raw) {
+  const text = raw.trim();
+  if (!text) return;
+  logLine(`> ${text}`);
+  const parts = text.toLowerCase().split(/\s+/);
+
+  if (parts[0] === "job" && parts.length === 3) {
+    const pickup = parseInt(parts[1]), dropoff = parseInt(parts[2]);
+    if (Number.isInteger(pickup) && Number.isInteger(dropoff)) {
+      send({cmd:"create_job", pickup, dropoff});
+    } else {
+      logLine("Usage: job <pickup> <dropoff>  e.g. job 10 20", "warn");
+    }
+  } else if (parts[0] === "assign" && parts.length === 4) {
+    const robotId = parseInt(parts[1]), pickup = parseInt(parts[2]), dropoff = parseInt(parts[3]);
+    if (Number.isInteger(robotId) && Number.isInteger(pickup) && Number.isInteger(dropoff)) {
+      send({cmd:"create_job", pickup, dropoff, target_robot: robotId});
+    } else {
+      logLine("Usage: assign <robot_id> <pickup> <dropoff>  e.g. assign 2 10 20", "warn");
+    }
+  } else if (parts[0] === "random" && parts.length === 1) {
+    send({cmd:"random_job"});
+  } else if (parts[0] === "mode" && (parts[1] === "smart" || parts[1] === "naive")) {
+    currentMode = parts[1];
+    send({cmd:"set_mode", smart: currentMode === "smart"});
+    const btn = document.getElementById("btn-mode");
+    btn.textContent = "Mode: " + currentMode.toUpperCase();
+    btn.classList.toggle("active", currentMode === "smart");
+  } else if (parts[0] === "graph" && parts.length === 1) {
+    send({cmd:"push_graph"});
+  } else {
+    logLine("Unknown command. Try: job <pickup> <dropoff> | assign <robot> <pickup> <dropoff> | random | mode smart | mode naive | graph", "warn");
+  }
+}
+
+document.getElementById("btn-cmd-run").onclick = () => {
+  const input = document.getElementById("cmd-input");
+  runCommand(input.value);
+  input.value = "";
+};
+document.getElementById("cmd-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    runCommand(e.target.value);
+    e.target.value = "";
+  }
+});
+
+setInterval(renderSidePanel, 1000);
+connect();
+</script>
+</body>
+</html>
